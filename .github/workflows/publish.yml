@@ -1,0 +1,56 @@
+# Publishes @execuro/edit-site to npm on every push to master that changes what the package ships.
+# Version: package.json's version if it's ahead of npm (bump minor/major there by hand),
+# otherwise the next patch after the latest published one. Auth is npm trusted publishing (OIDC), no token.
+name: Publish to npm
+
+on:
+  push:
+    branches: [master]
+    paths: [SKILL.md, README.md, LICENSE, package.json, "scripts/**", "bin/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # push the version tag
+  id-token: write # npm trusted publishing
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Use npm 11.5+ (needed for trusted publishing)
+        run: npm install -g npm@latest
+
+      - name: Self-test
+        run: npm test
+
+      - name: Pick the version
+        id: version
+        run: |
+          published=$(npm view "$(node -p 'require("./package.json").name')" version 2>/dev/null || echo 0.0.0)
+          next=$(node -e '
+            const [local, pub] = process.argv.slice(1).map((v) => v.split(".").map(Number));
+            const ahead = local[0] - pub[0] || local[1] - pub[1] || local[2] - pub[2];
+            console.log(ahead > 0 ? local.join(".") : [pub[0], pub[1], pub[2] + 1].join("."));
+          ' "$(node -p 'require("./package.json").version')" "$published")
+          npm version "$next" --no-git-tag-version --allow-same-version
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "Publishing $next (npm has $published)"
+
+      - name: Publish
+        run: npm publish --provenance --access public
+
+      - name: Tag the release
+        run: |
+          git tag "v${{ steps.version.outputs.next }}"
+          git push origin "v${{ steps.version.outputs.next }}"

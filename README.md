@@ -12,7 +12,14 @@ If the text lives in several places (for example a label in both the header and 
 
 ## Install
 
-With the [skills CLI](https://github.com/vercel-labs/skills):
+With npm:
+
+```sh
+npx @execuro/edit-site install          # this project
+npx @execuro/edit-site install -g       # all projects
+```
+
+Or with the [skills CLI](https://github.com/vercel-labs/skills):
 
 ```sh
 npx skills add execuro/edit-site        # this project
@@ -62,8 +69,10 @@ Edits are written automatically when the text is in source: a string literal, JS
 ## Development
 
 ```sh
-node tests/selftest.mjs    # fixture project per supported stack; --keep leaves them for inspection
+npm test                   # fixture project per supported stack; add -- --keep to inspect them
 ```
+
+Every push to `master` that changes the package publishes the next patch version to npm. For a minor or major release, raise `version` in `package.json` first.
 
 ---
 
