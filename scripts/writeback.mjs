@@ -33,8 +33,9 @@ function charPattern(c) {
   return `(?:${alts.join("|")})`;
 }
 
-// Whitespace may be a newline, several spaces, {" "} in JSX, or a non-breaking space in any spelling.
-const WS = `(?:\\s|\\{\\s*["'] ["']\\s*\\}|&nbsp;|&#160;|\\\\u00[aA]0)+`;
+// Whitespace may be a newline, several spaces, {" "} in JSX, a non-breaking space in any spelling,
+// or a line break: <br> in markup/JSX, an escaped \n in a string.
+const WS = `(?:\\s|\\{\\s*["'] ["']\\s*\\}|&nbsp;|&#160;|\\\\u00[aA]0|<br\\b[^>]*>|\\\\n)+`;
 // Word joiners may sit between any two characters in source without showing in the text we get.
 const OPT_WJ = `(?:\\\\u2060|\\u2060|&#8288;)?`;
 
@@ -151,14 +152,16 @@ function contextAt(file, src, idx) {
 const ENTITY = { "{": "&#123;", "}": "&#125;", "<": "&lt;", ">": "&gt;", "'": "&apos;", '"': "&quot;" };
 
 // Escape new text for where it lands. null = can't do it safely, queue for Claude instead.
+// A typed line break ("\n") becomes <br> in markup and JSX, \n in strings, a hard break in Markdown.
 function encodeFor(ctx, ext, text) {
+  text = text.replace(/\r\n?/g, "\n");
   switch (ctx.kind) {
     case "string": {
       if (/\{\{|\}\}/.test(text)) return null; // would turn into an Angular/Vue interpolation
       const q = ctx.quote;
       let t = text.replace(/\\/g, "\\\\");
       if (q === "`") return t.replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
-      if (/[\n\r]/.test(text)) return null;
+      t = t.replace(/\n/g, "\\n");
       if (q === "'" || q === '"') return t.replace(new RegExp(q, "g"), `\\${q}`);
       // Unknown delimiter: these escapes are valid in all three JS string kinds.
       return t.replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
@@ -167,15 +170,15 @@ function encodeFor(ctx, ext, text) {
       return JSON.stringify(text).slice(1, -1);
     case "jsx":
       // JSX text decodes HTML entities, so braces and angle brackets can be spelled as entities.
-      return text.replace(/[{}<>'"]/g, (c) => ENTITY[c]);
+      return text.replace(/[{}<>'"]/g, (c) => ENTITY[c]).replace(/\n/g, "<br />");
     case "markup": {
-      const t = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const t = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
       // Vue/Svelte/Astro decode entities after parsing expressions; Angular may not, so leave {{ to Claude there.
       if (ext === ".vue" || ext === ".svelte" || ext === ".astro") return t.replace(/[{}]/g, (c) => ENTITY[c]);
       return /\{\{|\}\}/.test(text) ? null : t;
     }
     case "md":
-      return text.replace(/[\\*_[\]`{}<>]/g, "\\$&");
+      return text.replace(/[\\*_[\]`{}<>]/g, "\\$&").replace(/\n/g, "\\\n");
     default:
       return null;
   }
@@ -286,6 +289,9 @@ export function createSaver({ project, stateDir }) {
     const short = (d.pre + d.oldMid + d.suf).replace(/\s+/g, " ").trim().length < 6;
     // No other text around this node in the page, so its source is most likely a whole string too.
     const wholeNode = !(ctx.before || "").trim() && !(ctx.after || "").trim();
+    // Only whitespace changed (typically a line break typed between words): a shorter anchor could land
+    // it at the edge of some string, so it must match with all its surrounding text.
+    const spaceOnly = !d.oldMid.trim() && !d.newMid.trim();
 
     const routes = routeSet();
     const loc = (h) => `${path.relative(ROOT, h.file)}:${lineOf(h.src, h.index)}`;
@@ -297,7 +303,7 @@ export function createSaver({ project, stateDir }) {
 
     let found = null;
     let first = null;
-    for (const a of short ? [{ pre: d.pre, suf: d.suf, full: true }] : anchors(d.pre, d.oldMid, d.suf)) {
+    for (const a of short || spaceOnly ? [{ pre: d.pre, suf: d.suf, full: true }] : anchors(d.pre, d.oldMid, d.suf)) {
       const re = new RegExp(`(${textPattern(a.pre)})(${textPattern(d.oldMid)})(${textPattern(a.suf)})`, "g");
       const all = [];
       for (const f of files) {
@@ -318,7 +324,10 @@ export function createSaver({ project, stateDir }) {
     }
     if (!found) {
       const reasons = [...new Set(first.map((h) => h.ctx.reason).filter(Boolean))];
-      return miss(short ? "too short to locate safely" : reasons.join(", ") || "not found as literal text in source", first.map(loc));
+      if (short) return miss("too short to locate safely", first.map(loc));
+      // The text on both sides comes from different places (`{body}{" "}<a>…`): the break belongs in the template.
+      if (spaceOnly && d.newMid.includes("\n") && !first.length) return miss("line break between separately rendered texts; add it in the template (e.g. <br />)");
+      return miss(reasons.join(", ") || "not found as literal text in source", first.map(loc));
     }
 
     let hits = found.hits;
@@ -345,7 +354,12 @@ export function createSaver({ project, stateDir }) {
     const encoded = encodeFor(h.ctx, path.extname(h.file), d.newMid);
     if (encoded === null) return miss("new text needs manual escaping here", [loc(h)]);
     fs.writeFileSync(h.file, h.src.slice(0, h.midStart) + encoded + h.src.slice(h.midStart + h.m[2].length));
-    return { status: "applied", file: path.relative(ROOT, h.file), line: lineOf(h.src, h.index) };
+    const out = { status: "applied", file: path.relative(ROOT, h.file), line: lineOf(h.src, h.index) };
+    // A \n in a string shows as a space unless the element keeps line breaks: that needs a style change.
+    if (d.newMid.includes("\n") && (h.ctx.kind === "string" || h.ctx.kind === "json") && !edit.breaks) {
+      out.followUp = "line break needs the element to render it";
+    }
+    return out;
   }
 
   // Try the changed text node first (most precise), then the whole element. When several nodes
@@ -391,11 +405,26 @@ export function createSaver({ project, stateDir }) {
     return p;
   };
 
+  const nextId = (pending) => Math.max(0, ...pending.map((p) => p.id)) + 1;
+
+  // Record an applied edit. When it still needs a style change (a line break that wouldn't show),
+  // that follow-up joins the queue for Claude.
+  function applied(pending, entry, outcome) {
+    if (outcome.followUp) {
+      const { ts, page, tag, region, element } = entry;
+      const reason = outcome.followUp;
+      pending = [...pending, { id: nextId(pending), kind: "style", ts, page, tag, region, element, reason, candidates: [`${outcome.file}:${outcome.line}`] }];
+    }
+    writePending(pending);
+    logApplied(entry, outcome);
+    return { ...outcome, pending: pending.length };
+  }
+
   function save(edit) {
     return serial(() => {
       let pending = readPending();
       // Editing text whose last edit is still queued: fold both into one edit from the original text.
-      const prev = pending.findLast((p) => p.page === edit.page && p.element.new === edit.element.old);
+      const prev = pending.findLast((p) => !p.kind && p.page === edit.page && p.element.new === edit.element.old);
       if (prev) {
         pending = pending.filter((p) => p !== prev);
         edit = { ...edit, element: { old: prev.element.old, new: edit.element.new }, nodes: chain(prev.nodes, edit.nodes) };
@@ -404,18 +433,14 @@ export function createSaver({ project, stateDir }) {
           return { status: "reverted", pending: pending.length };
         }
       }
-      const { page, lang, tag, region, href, element, nodes } = edit;
-      const entry = { ts: new Date().toISOString(), page, lang, tag, region, href, element, nodes };
+      const { page, lang, tag, region, href, breaks, element, nodes } = edit;
+      const entry = { ts: new Date().toISOString(), page, lang, tag, region, href, breaks, element, nodes };
       const { outcome, results } = attempt(edit);
-      if (outcome) {
-        if (prev) writePending(pending);
-        logApplied(entry, outcome);
-        return { ...outcome, pending: pending.length };
-      }
+      if (outcome) return applied(pending, entry, outcome);
       const reason = [...new Set(results.map((r) => r.reason))].join("; ");
       const candidates = [...new Set(results.flatMap((r) => r.candidates))];
       const choices = results.find((r) => r.choices)?.choices || [];
-      const id = Math.max(0, ...pending.map((p) => p.id)) + 1;
+      const id = nextId(pending);
       pending.push({ id, ...entry, reason, candidates, choices });
       writePending(pending);
       return { status: "queued", id, reason, choices, pending: pending.length };
@@ -430,11 +455,8 @@ export function createSaver({ project, stateDir }) {
       if (!entry) return { status: "error", reason: "that edit is no longer queued" };
       const { outcome, results } = attempt(entry, pick);
       if (!outcome) return { status: "queued", id, reason: results.map((r) => r.reason).join("; "), pending: pending.length };
-      const rest = pending.filter((p) => p !== entry);
-      writePending(rest);
       const { reason, candidates, choices, ...logged } = entry;
-      logApplied({ ...logged, ts: new Date().toISOString() }, outcome);
-      return { ...outcome, pending: rest.length };
+      return applied(pending.filter((p) => p !== entry), { ...logged, ts: new Date().toISOString() }, outcome);
     });
   }
 

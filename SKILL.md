@@ -27,7 +27,7 @@ Script paths below are relative to this skill's base directory.
    It prints one line with the URL it actually took (the port moves up if 3001 is busy), the detected framework and the root.
 4. **Hand over** `http://localhost:<port><path>` with these instructions:
    - Turn on **✎ Edit text** (bottom right) or press Alt+E. Links and buttons don't navigate while it's on.
-   - Click text and type. Enter or clicking away saves, and Esc reverts.
+   - Click text and type. Enter or clicking away saves, Shift+Enter adds a line break, and Esc reverts.
    - A **green** outline means the edit was written to source. If the text lives in several places, the bar lists them: click one to write it there.
    - **Amber** means it was queued: run `/edit-site apply` when done.
 
@@ -61,6 +61,8 @@ Steps:
    - **i18n JSON:** change only the active locale (`lang`), and mention other locales whose meaning is now stale.
    - **Duplicates:** change the copy on `page`, and ask if it's unclear which one that is.
    - **Escaping:** keep the file's existing style (`⁠`, `&apos;`, `{" "}`, `&amp;`).
+   - **A line break between two separately rendered texts** (e.g. `{body}{" "}<a>…</a>`): put it in the template, replacing the spacer with `<br />`, not into either string.
+   - **`kind: "style"` entries:** the text is already saved, but it contains a `\n` that the element shows as a space. Make the element that renders it keep line breaks: add `whitespace-pre-line` (Tailwind) or `white-space: pre-line`. If the lines are really separate paragraphs, split them into two fields or elements instead.
 3. Show a table `# | File:line | Before | After | Note` and wait for approval. These are the judgment calls the proxy declined to make, so the user should see them first.
 4. Apply the approved rows and remove them from the queue (delete the file when it's empty). Then run the project's type check or linter on the touched files.
 

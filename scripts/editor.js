@@ -44,8 +44,22 @@
     return out;
   }
 
+  // The element's text with each <br> as "\n" (textContent drops them). A <br> as the very last
+  // node is the placeholder browsers add after a trailing line break, not part of the text.
+  function textOf(el) {
+    const parts = [];
+    const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+    while (w.nextNode()) {
+      const n = w.currentNode;
+      if (n.nodeType === 3) parts.push(n.data);
+      else if (n.nodeName === "BR") parts.push(n);
+    }
+    if (typeof parts[parts.length - 1] === "object") parts.pop();
+    return parts.map((p) => (typeof p === "string" ? p : "\n")).join("");
+  }
+
   function start(el) {
-    active = { el, nodes: textNodes(el), orig: el.textContent, origHTML: el.innerHTML };
+    active = { el, nodes: textNodes(el), orig: textOf(el), origHTML: el.innerHTML };
     try { el.contentEditable = "plaintext-only"; } catch { el.contentEditable = "true"; }
     if (el.contentEditable !== "plaintext-only") el.contentEditable = "true";
     el.setAttribute("data-es-editing", "");
@@ -58,9 +72,10 @@
   }
 
   function revert() {
-    const { el, nodes, origHTML } = active;
+    const { el, nodes, orig, origHTML } = active;
     if (nodes.every((n) => n.node.isConnected)) nodes.forEach((n) => (n.node.data = n.data));
-    else el.innerHTML = origHTML;
+    // Restoring the text nodes isn't enough when nodes were added (a typed line break, a split node).
+    if (textOf(el) !== orig) el.innerHTML = origHTML;
   }
 
   async function commit() {
@@ -68,11 +83,11 @@
     const { el, nodes, orig } = active;
     active = null;
     stop(el);
-    const now = el.textContent;
+    const now = textOf(el);
     if (now === orig) return;
 
     // Node-level pairs are precise; only trust them if the DOM structure survived the edit.
-    const intact = nodes.every((n) => n.node.isConnected) && nodes.map((n) => n.node.data).join("") === now;
+    const intact = nodes.every((n) => n.node.isConnected) && nodes.map((n) => n.node.data).join("") === el.textContent;
     // before/after = the element's other text around this node, used to pick between duplicate matches.
     const changed = !intact ? [] : nodes
       .map((n, i) => ({ n, i }))
@@ -92,6 +107,8 @@
       // Where on the page and which link: tells apart the same text in header, footer and body.
       region: regionOf(el),
       href: link && link.length > 1 ? link : undefined,
+      // Does this element show "\n" as a line break? If not, a break typed into a string needs a style change.
+      breaks: /^(pre|pre-wrap|pre-line|break-spaces)$/.test(getComputedStyle(el).whiteSpace),
       element: { old: orig, new: now },
       nodes: changed,
     });
@@ -116,8 +133,8 @@
 
   function report(el, r) {
     if (r.pending != null) queued = r.pending;
-    flash(el, r.status === "reverted" ? "applied" : r.status);
-    if (r.status === "applied") { saved++; say(`Saved → ${r.file}:${r.line}`); }
+    flash(el, r.status === "reverted" ? "applied" : r.followUp ? "queued" : r.status);
+    if (r.status === "applied") { saved++; say(`Saved → ${r.file}:${r.line}${r.followUp ? ` · ${r.followUp}: run /edit-site apply` : ""}`); }
     else if (r.status === "reverted") say("Queued edit undone");
     else if (r.status === "queued" && r.choices?.length > 1) { say(`Found in ${r.choices.length} places. Write it to:`); choices(el, r); }
     else if (r.status === "queued") say(`Queued for Claude (${r.reason})`);
@@ -195,6 +212,8 @@
     if (e.altKey && e.code === "KeyE") { e.preventDefault(); return setOn(!on); }
     if (!active) return;
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); active.el.blur(); }
+    // A visible <br> in every browser; textOf() reads it back as "\n".
+    else if (e.key === "Enter") { e.preventDefault(); document.execCommand("insertLineBreak"); }
     else if (e.key === "Escape") { e.preventDefault(); revert(); active.el.blur(); }
   }, true);
 

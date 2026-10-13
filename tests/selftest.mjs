@@ -63,6 +63,7 @@ const STACKS = [
       { name: "message value", edit: { page: "/en", lang: "en", element: { old: "Build better products", new: "Build great products" } }, expect: { file: "messages/en.json" } },
       { name: "key equal to text is skipped; en only", edit: { page: "/en", lang: "en", element: { old: "Save changes", new: "Save all changes" } }, expect: { file: "messages/en.json", contains: ['"Save changes": "Save all changes"'], untouched: { "messages/de.json": '"Save changes": "Save changes"' } } },
       { name: "active locale picked by <html lang>", edit: { page: "/de", lang: "de", element: { old: "Save changes", new: "Änderungen speichern" } }, expect: { file: "messages/de.json", contains: ['"Save changes": "Änderungen speichern"'], untouched: { "messages/en.json": '"Save changes": "Save changes"' } } },
+      { name: "line break -> \\n in JSON", edit: { page: "/en", lang: "en", element: { old: "Build better products", new: "Build better\nproducts" } }, expect: { file: "messages/en.json", contains: ['"title": "Build better\\nproducts"'] } },
       { name: "quotes escaped for JSON", edit: { page: "/en", lang: "en", element: { old: "Build better products", new: 'Build "better" products' } }, expect: { file: "messages/en.json", contains: ['"title": "Build \\"better\\" products"'] } },
     ],
   },
@@ -77,6 +78,7 @@ const STACKS = [
       { name: "existing &amp; kept", edit: { page: "/", element: { old: "Fast & friendly support", new: "Fast & very friendly support" } }, expect: { file: "index.html", contains: ["Fast &amp; very friendly support"] } },
       { name: "alt attribute ignored", edit: { page: "/", element: { old: "Meet our friendly team", new: "Meet our wonderful team" } }, expect: { file: "index.html", contains: ["<p>Meet our wonderful team</p>", 'alt="Meet our friendly team"'] } },
       { name: "new & escaped", edit: { page: "/about/", element: { old: "Contact sales today", new: "Contact sales & support today" } }, expect: { file: "about/index.html", contains: ["Contact sales &amp; support today"] } },
+      { name: "line break -> <br>", edit: { page: "/about/", element: { old: "Contact sales today", new: "Contact sales\ntoday" } }, expect: { file: "about/index.html", contains: ["<p>Contact sales<br>today</p>"] } },
       { name: "duplicate -> this page's file", edit: { page: "/about/", element: { old: "Made with care in Berlin", new: "Made with love in Berlin" } }, expect: { file: "about/index.html", untouched: { "index.html": "Made with care in Berlin" } } },
     ],
   },
@@ -208,6 +210,26 @@ const STACKS = [
     ],
   },
   {
+    name: "Line breaks",
+    framework: "next",
+    files: {
+      "package.json": pkg({ next: "16.0.0" }),
+      "content/pricing.ts": 'export const pricing = {\n  frame: "Fixed price per project. No hourly billing.",\n  terms: "Cancel any time. Refunds within 30 days.",\n  body: "Plans for every team size.",\n  label: "Compare all plans",\n};\n',
+      "app/page.tsx":
+        'import { pricing } from "../content/pricing";\nexport default function Home() {\n  return (\n    <main>\n      <h1>Complex<br/>E-Commerce</h1>\n      <p>Fast setup and friendly support</p>\n      <p className="whitespace-pre-line">{pricing.terms}</p>\n      <p>{pricing.frame}</p>\n      <p>{pricing.body}{" "}<a href="/compare/">{pricing.label} &rarr;</a></p>\n    </main>\n  );\n}\n',
+      "app/docs/page.mdx": "# Docs\n\nRead the guide first.\n",
+    },
+    cases: [
+      { name: "typed in JSX text -> <br />", edit: { page: "/", element: { old: "Fast setup and friendly support", new: "Fast setup\nand friendly support" } }, expect: { file: "app/page.tsx", contains: ["<p>Fast setup<br />and friendly support</p>"] } },
+      { name: "typed in a string -> \\n + style follow-up", edit: { page: "/", element: { old: "Fixed price per project. No hourly billing.", new: "Fixed price per project.\nNo hourly billing." } }, expect: { file: "content/pricing.ts", contains: ['"Fixed price per project.\\nNo hourly billing."'], followUp: true, pending: 1 } },
+      { name: "string in a pre-line element -> no follow-up", edit: { page: "/", breaks: true, element: { old: "Cancel any time. Refunds within 30 days.", new: "Cancel any time.\nRefunds within 30 days." } }, expect: { file: "content/pricing.ts", contains: ['"Cancel any time.\\nRefunds within 30 days."'], followUp: false, pending: 0 } },
+      { name: "text around a <br/> still matches", edit: { page: "/", element: { old: "Complex\nE-Commerce", new: "Complex\nCommerce" } }, expect: { file: "app/page.tsx", contains: ["<h1>Complex<br/>Commerce</h1>"] } },
+      { name: "line break removed -> <br/> gone", edit: { page: "/", element: { old: "Complex\nE-Commerce", new: "Complex E-Commerce" } }, expect: { file: "app/page.tsx", contains: ["<h1>Complex E-Commerce</h1>"] } },
+      { name: "break between two rendered texts -> queued", edit: { page: "/", element: { old: "Plans for every team size. Compare all plans →", new: "Plans for every team size. \nCompare all plans →" } }, expect: { status: "queued", reason: "template", untouched: { "content/pricing.ts": 'body: "Plans for every team size.",' } } },
+      { name: "typed in Markdown -> hard break", edit: { page: "/docs/", element: { old: "Read the guide first.", new: "Read the guide\nfirst." } }, expect: { file: "app/docs/page.mdx", contains: ["Read the guide\\\nfirst."] } },
+    ],
+  },
+  {
     name: "Next.js (src/, escapes, composed copy)",
     framework: "next",
     files: {
@@ -285,9 +307,11 @@ for (const stack of STACKS) {
     }
     const want = c.expect;
     const status = want.status || "applied";
+    if (want.reason && !result?.reason?.includes(want.reason)) problems.push(`reason "${result?.reason}", expected it to mention "${want.reason}"`);
     if (result && result.status !== status) problems.push(`got ${result.status} (${result.reason || result.file || ""}), expected ${status}`);
     if (result && status === "applied" && result.status === "applied") {
       if (want.file && result.file !== want.file) problems.push(`wrote ${result.file}, expected ${want.file}`);
+      if (want.followUp != null && Boolean(result.followUp) !== want.followUp) problems.push(`follow-up ${Boolean(result.followUp)}, expected ${want.followUp}`);
       const body = fs.readFileSync(path.join(root, result.file), "utf8");
       const contains = want.contains || (c.edit && !c.edit.nodes ? [c.edit.element.new] : []);
       for (const s of contains) if (!body.includes(s)) problems.push(`missing ${JSON.stringify(s)}`);

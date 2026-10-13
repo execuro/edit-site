@@ -6,7 +6,7 @@ Edit your website's text in the browser, and have Claude Code write each change 
 /edit-site http://localhost:3000/pricing/
 ```
 
-You get `http://localhost:3001/pricing/`. Turn on **✎ Edit text**, click any text, type and press Enter. The change is written into the right source file, and your dev server hot-reloads the page.
+You get `http://localhost:3001/pricing/`. Turn on **✎ Edit text**, click any text, type and press Enter (Shift+Enter for a line break). The change is written into the right source file, and your dev server hot-reloads the page.
 
 If the text lives in several places (for example a label in both the header and the footer), the bar lists them and you click where it goes. Anything it can't place is queued: run `/edit-site apply` and Claude shows you those edits to approve.
 
