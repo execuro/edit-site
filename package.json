@@ -1,6 +1,6 @@
 {
   "name": "@execuro/edit-site",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Claude Code skill: edit a local website's text in the browser and write every change back into source.",
   "keywords": ["claude-code", "claude-skill", "agent-skill", "inline-editing", "copywriting", "nextjs", "vue", "svelte", "angular"],
   "homepage": "https://github.com/execuro/edit-site",
